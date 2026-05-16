@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>سجل التسجيل والقبول - الثانوية الثالثة بالخبر</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet" />
+  <style>
+    * { font-family: 'Tajawal', sans-serif; }
+    .spinner { border: 3px solid #bae6fd; border-top: 3px solid #0284c7; border-radius: 50%; width: 32px; height: 32px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    select, input, textarea { outline: none; }
+    select:focus, input:focus, textarea:focus { box-shadow: 0 0 0 2px #7dd3fa; }
+    .tab-active-emerald { border-bottom: 2px solid #059669; color: #065f46; background: white; }
+    .tab-active-rose { border-bottom: 2px solid #e11d48; color: #9f1239; background: white; }
+    .tab-active-sky { border-bottom: 2px solid #0284c7; color: #0c4a6e; background: white; }
+    .tab-inactive { border-bottom: 2px solid transparent; color: #64748b; }
+    .tab-inactive:hover { color: #334155; background: rgba(255,255,255,0.5); }
+    .modal-overlay { background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); }
+    .truncate-cell { max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  </style>
+</head>
+<body style="background: linear-gradient(160deg, #e8f4fd 0%, #f0f7ff 40%, #e2eef9 70%, #d6e8f5 100%); min-height: 100vh;">
+
+<!-- App Root -->
+<div id="app"></div>
+
+<script>
+const { createClient } = supabase;
+const SUPABASE_URL = 'https://trbwyhirvlkjydkexseg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRyYnd5aGlydmxranlka2V4c2VnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2ODEwMzAsImV4cCI6MjA5NDI1NzAzMH0.0mekhc4UcB2HLzFiZdDezdef3g_2q2F-Zr69BIm3zTQ';
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const GRADES = ['الأول الثانوي', 'الثاني الثانوي', 'الثالث الثانوي'];
+const SECTIONS = ['أ', 'ب', 'ج', 'د', 'هـ', 'و'];
+
+// ── State ──────────────────────────────────────────────────────────
+let state = {
+  tab: 'transfers_in',
+  transfersIn: [], transfersOut: [], elearning: [],
+  loading: true, saving: false,
+  search: '', gradeFilter: '',
+  showForm: false, editingId: null,
+  formIn: emptyIn(), formOut: emptyOut(), formEl: emptyEl(),
+  error: '', deleteConfirm: null,
+};
+
+function emptyIn()  { return { student_name:'', national_id:'', grade:'', section:'', from_school:'', transfer_date:'', start_date:'', notes:'' }; }
+function emptyOut() { return { student_name:'', national_id:'', grade:'', section:'', to_school:'', transfer_date:'', notes:'' }; }
+function emptyEl()  { return { student_name:'', national_id:'', grade:'', section:'', transfer_date:'', notes:'' }; }
+
+// ── Data ───────────────────────────────────────────────────────────
+async function fetchData() {
+  state.loading = true; render();
+  const [a, b, c] = await Promise.all([
+    db.from('transfers_in').select('*').order('transfer_date', { ascending: false }),
+    db.from('transfers_out').select('*').order('transfer_date', { ascending: false }),
+    db.from('elearning_students').select('*').order('transfer_date', { ascending: false }),
+  ]);
+  state.transfersIn = a.data ?? [];
+  state.transfersOut = b.data ?? [];
+  state.elearning = c.data ?? [];
+  state.loading = false; render();
+}
+
+async function saveRecord() {
+  const err = validate();
+  if (err) { state.error = err; render(); return; }
+  state.saving = true; state.error = ''; render();
+  const t = state.tab;
+  if (t === 'transfers_in') {
+    const { id, created_at, ...p } = state.formIn;
+    if (state.editingId) await db.from('transfers_in').update(p).eq('id', state.editingId);
+    else await db.from('transfers_in').insert(p);
+  } else if (t === 'transfers_out') {
+    const { id, created_at, ...p } = state.formOut;
+    if (state.editingId) await db.from('transfers_out').update(p).eq('id', state.editingId);
+    else await db.from('transfers_out').insert(p);
+  } else {
+    const { id, created_at, ...p } = state.formEl;
+    if (state.editingId) await db.from('elearning_students').update(p).eq('id', state.editingId);
+    else await db.from('elearning_students').insert(p);
+  }
+  state.saving = false; state.showForm = false;
+  await fetchData();
+}
+
+async function deleteRecord(id) {
+  const table = state.tab === 'transfers_in' ? 'transfers_in' : state.tab === 'transfers_out' ? 'transfers_out' : 'elearning_students';
+  await db.from(table).delete().eq('id', id);
+  state.deleteConfirm = null;
+  await fetchData();
+}
+
+function validate() {
+  const t = state.tab;
+  if (t === 'transfers_in') {
+    if (!state.formIn.student_name.trim()) return 'اسم الطالبة مطلوب';
+    if (!state.formIn.national_id.trim()) return 'رقم الهوية مطلوب';
+    if (!state.formIn.grade) return 'المرحلة الدراسية مطلوبة';
+    if (!state.formIn.from_school.trim()) return 'المدرسة المنقولة منها مطلوبة';
+    if (!state.formIn.transfer_date) return 'تاريخ النقل مطلوب';
+    if (!state.formIn.start_date) return 'تاريخ المباشرة مطلوب';
+  } else if (t === 'transfers_out') {
+    if (!state.formOut.student_name.trim()) return 'اسم الطالبة مطلوب';
+    if (!state.formOut.national_id.trim()) return 'رقم الهوية مطلوب';
+    if (!state.formOut.grade) return 'المرحلة الدراسية مطلوبة';
+    if (!state.formOut.to_school.trim()) return 'المدرسة المنقولة إليها مطلوبة';
+    if (!state.formOut.transfer_date) return 'تاريخ النقل مطلوب';
+  } else {
+    if (!state.formEl.student_name.trim()) return 'اسم الطالبة مطلوب';
+    if (!state.formEl.national_id.trim()) return 'رقم الهوية مطلوب';
+    if (!state.formEl.grade) return 'المرحلة الدراسية مطلوبة';
+    if (!state.formEl.transfer_date) return 'تاريخ التحويل مطلوب';
+  }
+  return '';
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+function fmt(d) {
+  if (!d) return '-';
+  const [y,m,day] = d.split('-');
+  return `${day}/${m}/${y}`;
+}
+
+function getFiltered() {
+  const q = state.search.toLowerCase();
+  const g = state.gradeFilter;
+  return {
+    transfers_in: state.transfersIn.filter(r =>
+      (!q || r.student_name.includes(q) || r.national_id.includes(q) || r.from_school.includes(q)) && (!g || r.grade === g)),
+    transfers_out: state.transfersOut.filter(r =>
+      (!q || r.student_name.includes(q) || r.national_id.includes(q) || r.to_school.includes(q)) && (!g || r.grade === g)),
+    elearning: state.elearning.filter(r =>
+      (!q || r.student_name.includes(q) || r.national_id.includes(q)) && (!g || r.grade === g)),
+  };
+}
+
+function openAdd() {
+  state.editingId = null;
+  state.formIn = emptyIn(); state.formOut = emptyOut(); state.formEl = emptyEl();
+  state.error = ''; state.showForm = true; render();
+}
+
+function openEdit(record) {
+  state.editingId = record.id; state.error = '';
+  if (state.tab === 'transfers_in') state.formIn = { ...record };
+  else if (state.tab === 'transfers_out') state.formOut = { ...record };
+  else state.formEl = { ...record };
+  state.showForm = true; render();
+}
+
+// ── Render ─────────────────────────────────────────────────────────
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = buildApp();
+  attachEvents();
+}
+
+function buildApp() {
+  const filtered = getFiltered();
+  const counts = { transfers_in: state.transfersIn.length, transfers_out: state.transfersOut.length, elearning: state.elearning.length };
+  const activeRows = filtered[state.tab];
+
+  return `
+  <div style="position:relative; z-index:1;">
+    <!-- SVG BG -->
+    <div style="position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden;">
+      <svg style="position:absolute;bottom:0;left:0;width:100%;height:35vh;" viewBox="0 0 1440 320" preserveAspectRatio="none">
+        <path fill="rgba(186,224,255,0.35)" d="M0,192L60,186.7C120,181,240,171,360,181.3C480,192,600,224,720,224C840,224,960,192,1080,181.3C1200,171,1320,181,1380,186.7L1440,192L1440,320L0,320Z"/>
+      </svg>
+    </div>
+
+    <!-- Header -->
+    <header style="position:relative;background:linear-gradient(135deg,#0a4f8c 0%,#1170b8 50%,#1a8fd1 100%);overflow:hidden;">
+      <svg style="position:absolute;bottom:0;left:0;width:100%;height:30px;" viewBox="0 0 1440 60" preserveAspectRatio="none">
+        <path fill="rgba(232,244,253,0.95)" d="M0,30L80,26C160,22,320,14,480,18C640,22,800,38,960,42C1120,46,1280,38,1360,34L1440,30L1440,60L0,60Z"/>
+      </svg>
+      <div style="max-width:900px;margin:auto;padding:24px 16px 40px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;">
+        <img src="https://i.ibb.co/tMJM2hZM/image.png" alt="شعار المدرسة" style="height:112px;object-fit:contain;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.3));" onerror="this.style.display='none'" />
+        <div>
+          <h1 style="font-size:1.4rem;font-weight:800;color:white;letter-spacing:0.03em;">سجل التسجيل والقبول</h1>
+          <p style="color:#bae6fd;font-size:0.85rem;margin-top:4px;font-weight:500;">الثانوية الثالثة بالخبر &nbsp;|&nbsp; قسم الشؤون الطلابية</p>
+        </div>
+      </div>
+    </header>
+
+    <div style="max-width:1100px;margin:auto;padding:28px 16px;display:flex;flex-direction:column;gap:24px;position:relative;z-index:1;">
+
+      <!-- Stats Cards -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+        ${buildStatCard('transfers_in','منقولات إلى المدرسة','emerald','#ecfdf5','#d1fae5','#065f46','#34d399','#10b981',counts.transfers_in)}
+        ${buildStatCard('transfers_out','منقولات من المدرسة','rose','#fff1f2','#ffe4e6','#9f1239','#fb7185','#f43f5e',counts.transfers_out)}
+        ${buildStatCard('elearning','التعليم الإلكتروني','sky','#f0f9ff','#e0f2fe','#0c4a6e','#38bdf8','#0ea5e9',counts.elearning)}
+      </div>
+
+      <!-- Main Card -->
+      <div style="background:rgba(255,255,255,0.9);backdrop-filter:blur(8px);border-radius:24px;box-shadow:0 4px 24px rgba(0,0,0,0.08);border:1px solid rgba(255,255,255,0.6);overflow:hidden;">
+
+        <!-- Tabs -->
+        <div style="display:flex;border-bottom:1px solid #f1f5f9;background:rgba(248,250,252,0.6);">
+          ${buildTab('transfers_in','منقولات إلى المدرسة','emerald')}
+          ${buildTab('transfers_out','منقولات من المدرسة','rose')}
+          ${buildTab('elearning','التعليم الإلكتروني','sky')}
+        </div>
+
+        <!-- Toolbar -->
+        <div style="padding:16px;display:flex;flex-wrap:wrap;gap:12px;border-bottom:1px solid #f1f5f9;">
+          <div style="flex:1;min-width:200px;position:relative;">
+            <svg style="position:absolute;right:12px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:#94a3b8;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <input id="searchInput" type="text" placeholder="بحث باسم الطالبة أو رقم الهوية..." value="${state.search}"
+              style="width:100%;padding:10px 40px 10px 16px;border:1px solid #e2e8f0;border-radius:12px;font-size:0.875rem;background:#f8fafc;color:#1e293b;box-sizing:border-box;" />
+          </div>
+          <div style="position:relative;">
+            <select id="gradeFilter" style="appearance:none;padding:10px 16px 10px 32px;border:1px solid #e2e8f0;border-radius:12px;font-size:0.875rem;background:#f8fafc;color:#334155;">
+              <option value="" ${!state.gradeFilter?'selected':''}>كل المراحل</option>
+              ${GRADES.map(g=>`<option value="${g}" ${state.gradeFilter===g?'selected':''}>${g}</option>`).join('')}
+            </select>
+            <svg style="position:absolute;left:8px;top:50%;transform:translateY(-50%);width:14px;height:14px;pointer-events:none;color:#94a3b8;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+          <button id="addBtn" style="display:flex;align-items:center;gap:8px;background:linear-gradient(to left,#0369a1,#0284c7);color:white;padding:10px 20px;border-radius:12px;font-size:0.875rem;font-weight:600;border:none;cursor:pointer;box-shadow:0 2px 8px rgba(2,132,199,0.3);">
+            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            إضافة سجل
+          </button>
+        </div>
+
+        <!-- Table -->
+        <div style="overflow-x:auto;">
+          ${state.loading ? buildLoading() : activeRows.length === 0 ? buildEmpty() : buildTable(activeRows, filtered)}
+        </div>
+
+        ${!state.loading ? `<div style="padding:12px 20px;border-top:1px solid #f1f5f9;font-size:0.75rem;color:#94a3b8;text-align:left;">${activeRows.length} سجل</div>` : ''}
+      </div>
+    </div>
+  </div>
+
+  ${state.showForm ? buildFormModal() : ''}
+  ${state.deleteConfirm ? buildDeleteModal() : ''}
+  `;
+}
+
+function buildStatCard(key, label, color, bg, border, textColor, grad1, grad2, count) {
+  const active = state.tab === key;
+  return `
+  <button data-tab="${key}" class="stat-card" style="border-radius:16px;border:1px solid ${border};background:${bg};padding:16px;display:flex;flex-direction:column;align-items:center;gap:8px;cursor:pointer;transition:all 0.2s;${active?'box-shadow:0 0 0 2px #7dd3fa,0 4px 16px rgba(0,0,0,0.1);':''}">
+    <div style="background:linear-gradient(135deg,${grad1},${grad2});border-radius:12px;padding:10px;box-shadow:0 2px 8px rgba(0,0,0,0.15);">
+      ${key==='transfers_in' ? iconUserPlus() : key==='transfers_out' ? iconUserMinus() : iconMonitor()}
+    </div>
+    <span style="font-size:1.5rem;font-weight:800;color:${textColor};">${count}</span>
+    <span style="font-size:0.75rem;color:#64748b;font-weight:500;text-align:center;line-height:1.3;">${label}</span>
+  </button>`;
+}
+
+function buildTab(key, label, color) {
+  const active = state.tab === key;
+  const colors = { emerald: '#065f46', rose: '#9f1239', sky: '#0c4a6e' };
+  const borders = { emerald: '#059669', rose: '#e11d48', sky: '#0284c7' };
+  return `
+  <button data-tab="${key}" class="tab-btn" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:14px 8px;font-size:0.875rem;font-weight:600;border:none;cursor:pointer;transition:all 0.2s;
+    ${active ? `border-bottom:2px solid ${borders[color]};color:${colors[color]};background:white;` : 'border-bottom:2px solid transparent;color:#64748b;background:transparent;'}">
+    ${key==='transfers_in' ? iconUserPlusSmall() : key==='transfers_out' ? iconUserMinusSmall() : iconMonitorSmall()}
+    <span>${label}</span>
+  </button>`;
+}
+
+function buildLoading() {
+  return `<div style="padding:80px;text-align:center;">
+    <div class="spinner" style="margin:auto;"></div>
+    <p style="color:#94a3b8;font-size:0.875rem;margin-top:12px;">جارٍ تحميل البيانات...</p>
+  </div>`;
+}
+
+function buildEmpty() {
+  return `<div style="padding:64px;text-align:center;">
+    <div style="background:#f1f5f9;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:auto auto 12px;">
+      <svg width="24" height="24" fill="none" stroke="#94a3b8" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+    </div>
+    <p style="color:#64748b;font-size:0.875rem;">لا توجد سجلات بعد</p>
+    <p style="color:#94a3b8;font-size:0.75rem;margin-top:4px;">اضغطي على "إضافة سجل" للبدء</p>
+  </div>`;
+}
+
+function buildTable(activeRows, filtered) {
+  const t = state.tab;
+  if (t === 'transfers_in') return buildTransfersInTable(filtered.transfers_in);
+  if (t === 'transfers_out') return buildTransfersOutTable(filtered.transfers_out);
+  return buildElearningTable(filtered.elearning);
+}
+
+const thStyle = 'padding:12px 16px;text-align:right;font-weight:600;font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;';
+const tdStyle = 'padding:12px 16px;font-size:0.875rem;';
+
+function gradeBadge(grade, section, color) {
+  const cls = { emerald:'background:#d1fae5;color:#065f46;', rose:'background:#ffe4e6;color:#9f1239;', sky:'background:#e0f2fe;color:#0c4a6e;' };
+  return `<span style="display:inline-flex;align-items:center;padding:2px 10px;border-radius:9999px;font-size:0.75rem;font-weight:500;${cls[color]}">${grade}${section ? ' / ' + section : ''}</span>`;
+}
+
+function actionBtns(record) {
+  return `<div style="display:flex;align-items:center;justify-content:center;gap:6px;">
+    <button class="edit-btn" data-id='${JSON.stringify(record).replace(/'/g,"&#39;")}' style="padding:6px;border-radius:8px;border:none;cursor:pointer;background:transparent;color:#0284c7;" title="تعديل">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+    </button>
+    <button class="del-btn" data-id="${record.id}" style="padding:6px;border-radius:8px;border:none;cursor:pointer;background:transparent;color:#f43f5e;" title="حذف">
+      <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+    </button>
+  </div>`;
+}
+
+function buildTransfersInTable(rows) {
+  return `<table style="width:100%;border-collapse:collapse;">
+    <thead><tr style="background:rgba(236,253,245,0.6);border-bottom:1px solid #d1fae5;">
+      <th style="${thStyle}">#</th><th style="${thStyle}">اسم الطالبة</th><th style="${thStyle}">رقم الهوية</th>
+      <th style="${thStyle}">المرحلة</th><th style="${thStyle}">المدرسة المنقولة منها</th>
+      <th style="${thStyle}">تاريخ النقل</th><th style="${thStyle}">تاريخ المباشرة</th>
+      <th style="${thStyle}">ملاحظات</th><th style="padding:12px 16px;text-align:center;font-size:0.7rem;color:#64748b;font-weight:600;">إجراءات</th>
+    </tr></thead>
+    <tbody>${rows.map((r,i)=>`<tr style="border-bottom:1px solid #f8fafc;" class="table-row">
+      <td style="${tdStyle}color:#94a3b8;">${i+1}</td>
+      <td style="${tdStyle}font-weight:600;color:#1e293b;">${r.student_name}</td>
+      <td style="${tdStyle}color:#64748b;font-family:monospace;font-size:0.75rem;">${r.national_id}</td>
+      <td style="${tdStyle}">${gradeBadge(r.grade, r.section, 'emerald')}</td>
+      <td style="${tdStyle}color:#475569;">${r.from_school}</td>
+      <td style="${tdStyle}color:#64748b;white-space:nowrap;">${fmt(r.transfer_date)}</td>
+      <td style="${tdStyle}color:#64748b;white-space:nowrap;">${fmt(r.start_date)}</td>
+      <td style="${tdStyle}color:#94a3b8;" class="truncate-cell">${r.notes||'-'}</td>
+      <td style="${tdStyle}">${actionBtns(r)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function buildTransfersOutTable(rows) {
+  return `<table style="width:100%;border-collapse:collapse;">
+    <thead><tr style="background:rgba(255,241,242,0.6);border-bottom:1px solid #ffe4e6;">
+      <th style="${thStyle}">#</th><th style="${thStyle}">اسم الطالبة</th><th style="${thStyle}">رقم الهوية</th>
+      <th style="${thStyle}">المرحلة</th><th style="${thStyle}">المدرسة المنقولة إليها</th>
+      <th style="${thStyle}">تاريخ النقل</th><th style="${thStyle}">ملاحظات</th>
+      <th style="padding:12px 16px;text-align:center;font-size:0.7rem;color:#64748b;font-weight:600;">إجراءات</th>
+    </tr></thead>
+    <tbody>${rows.map((r,i)=>`<tr style="border-bottom:1px solid #f8fafc;" class="table-row">
+      <td style="${tdStyle}color:#94a3b8;">${i+1}</td>
+      <td style="${tdStyle}font-weight:600;color:#1e293b;">${r.student_name}</td>
+      <td style="${tdStyle}color:#64748b;font-family:monospace;font-size:0.75rem;">${r.national_id}</td>
+      <td style="${tdStyle}">${gradeBadge(r.grade, r.section, 'rose')}</td>
+      <td style="${tdStyle}color:#475569;">${r.to_school}</td>
+      <td style="${tdStyle}color:#64748b;white-space:nowrap;">${fmt(r.transfer_date)}</td>
+      <td style="${tdStyle}color:#94a3b8;" class="truncate-cell">${r.notes||'-'}</td>
+      <td style="${tdStyle}">${actionBtns(r)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function buildElearningTable(rows) {
+  return `<table style="width:100%;border-collapse:collapse;">
+    <thead><tr style="background:rgba(240,249,255,0.6);border-bottom:1px solid #e0f2fe;">
+      <th style="${thStyle}">#</th><th style="${thStyle}">اسم الطالبة</th><th style="${thStyle}">رقم الهوية</th>
+      <th style="${thStyle}">المرحلة</th><th style="${thStyle}">تاريخ التحويل</th>
+      <th style="${thStyle}">ملاحظات</th>
+      <th style="padding:12px 16px;text-align:center;font-size:0.7rem;color:#64748b;font-weight:600;">إجراءات</th>
+    </tr></thead>
+    <tbody>${rows.map((r,i)=>`<tr style="border-bottom:1px solid #f8fafc;" class="table-row">
+      <td style="${tdStyle}color:#94a3b8;">${i+1}</td>
+      <td style="${tdStyle}font-weight:600;color:#1e293b;">${r.student_name}</td>
+      <td style="${tdStyle}color:#64748b;font-family:monospace;font-size:0.75rem;">${r.national_id}</td>
+      <td style="${tdStyle}">${gradeBadge(r.grade, r.section, 'sky')}</td>
+      <td style="${tdStyle}color:#64748b;white-space:nowrap;">${fmt(r.transfer_date)}</td>
+      <td style="${tdStyle}color:#94a3b8;" class="truncate-cell">${r.notes||'-'}</td>
+      <td style="${tdStyle}">${actionBtns(r)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+// ── Form Modal ─────────────────────────────────────────────────────
+function buildFormModal() {
+  const t = state.tab;
+  const title = state.editingId ? 'تعديل السجل'
+    : t==='transfers_in' ? 'إضافة منقولة إلى المدرسة'
+    : t==='transfers_out' ? 'إضافة منقولة من المدرسة'
+    : 'إضافة طالبة تعليم إلكتروني';
+
+  return `
+  <div class="modal-overlay" style="position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:16px;">
+    <div class="fade-in" style="background:white;border-radius:24px;box-shadow:0 20px 60px rgba(0,0,0,0.2);width:100%;max-width:520px;max-height:92vh;overflow-y:auto;border:1px solid #f1f5f9;">
+      <!-- Header -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 24px;border-bottom:1px solid #f1f5f9;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:linear-gradient(135deg,#38bdf8,#0284c7);border-radius:12px;padding:8px;box-shadow:0 2px 8px rgba(2,132,199,0.3);">
+            ${t==='transfers_in' ? iconUserPlus() : t==='transfers_out' ? iconUserMinus() : iconMonitor()}
+          </div>
+          <h2 style="font-weight:700;color:#1e293b;font-size:1rem;">${title}</h2>
+        </div>
+        <button id="closeForm" style="padding:8px;border-radius:10px;border:none;cursor:pointer;background:transparent;color:#64748b;">
+          <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <!-- Body -->
+      <div style="padding:24px;display:flex;flex-direction:column;gap:16px;">
+        ${state.error ? `<div style="display:flex;align-items:center;gap:8px;background:#fff1f2;border:1px solid #fecdd3;color:#be123c;font-size:0.875rem;padding:12px 16px;border-radius:12px;">
+          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          ${state.error}
+        </div>` : ''}
+        ${t==='transfers_in' ? buildFormIn() : t==='transfers_out' ? buildFormOut() : buildFormEl()}
+      </div>
+      <!-- Footer -->
+      <div style="padding:16px 24px;border-top:1px solid #f1f5f9;display:flex;gap:12px;justify-content:flex-end;">
+        <button id="cancelForm" style="padding:10px 20px;border-radius:12px;border:1px solid #e2e8f0;color:#475569;font-size:0.875rem;font-weight:500;cursor:pointer;background:white;">إلغاء</button>
+        <button id="saveBtn" style="display:flex;align-items:center;gap:8px;padding:10px 20px;border-radius:12px;background:linear-gradient(to left,#0369a1,#0284c7);color:white;font-size:0.875rem;font-weight:600;border:none;cursor:pointer;box-shadow:0 2px 8px rgba(2,132,199,0.3);" ${state.saving?'disabled':''}>
+          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          ${state.saving ? 'جارٍ الحفظ...' : 'حفظ'}
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+const inputStyle = 'width:100%;padding:10px 12px;border:1px solid #e2e8f0;border-radius:12px;font-size:0.875rem;background:#f8fafc;color:#1e293b;box-sizing:border-box;font-family:Tajawal,sans-serif;';
+const labelStyle = 'display:flex;align-items:center;gap:6px;font-size:0.75rem;font-weight:600;color:#475569;margin-bottom:6px;';
+
+function field(label, required, content) {
+  return `<div><label style="${labelStyle}">${label}${required?'<span style="color:#f43f5e;">*</span>':''}</label>${content}</div>`;
+}
+
+function gradeSection(gradeVal, sectionVal, gradeKey, sectionKey) {
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+    ${field('المرحلة الدراسية', true, `<select id="${gradeKey}" style="${inputStyle}"><option value="">اختر المرحلة</option>${GRADES.map(g=>`<option value="${g}" ${gradeVal===g?'selected':''}>${g}</option>`).join('')}</select>`)}
+    ${field('الفصل', false, `<select id="${sectionKey}" style="${inputStyle}"><option value="">اختياري</option>${SECTIONS.map(s=>`<option value="${s}" ${sectionVal===s?'selected':''}>${s}</option>`).join('')}</select>`)}
+  </div>`;
+}
+
+function buildFormIn() {
+  const f = state.formIn;
+  return `
+    ${field('اسم الطالبة', true, `<input id="fi_student_name" type="text" value="${esc(f.student_name)}" placeholder="الاسم الكامل" style="${inputStyle}" />`)}
+    ${field('رقم الهوية', true, `<input id="fi_national_id" type="text" value="${esc(f.national_id)}" placeholder="رقم الهوية الوطنية" style="${inputStyle}direction:ltr;" />`)}
+    ${gradeSection(f.grade, f.section, 'fi_grade', 'fi_section')}
+    ${field('المدرسة المنقولة منها', true, `<input id="fi_from_school" type="text" value="${esc(f.from_school)}" placeholder="اسم المدرسة" style="${inputStyle}" />`)}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      ${field('تاريخ النقل', true, `<input id="fi_transfer_date" type="date" value="${f.transfer_date}" style="${inputStyle}direction:ltr;" />`)}
+      ${field('تاريخ المباشرة', true, `<input id="fi_start_date" type="date" value="${f.start_date}" style="${inputStyle}direction:ltr;" />`)}
+    </div>
+    ${field('ملاحظات', false, `<textarea id="fi_notes" placeholder="ملاحظات إضافية (اختياري)" rows="2" style="${inputStyle}resize:none;">${esc(f.notes)}</textarea>`)}
+  `;
+}
+
+function buildFormOut() {
+  const f = state.formOut;
+  return `
+    ${field('اسم الطالبة', true, `<input id="fo_student_name" type="text" value="${esc(f.student_name)}" placeholder="الاسم الكامل" style="${inputStyle}" />`)}
+    ${field('رقم الهوية', true, `<input id="fo_national_id" type="text" value="${esc(f.national_id)}" placeholder="رقم الهوية الوطنية" style="${inputStyle}direction:ltr;" />`)}
+    ${gradeSection(f.grade, f.section, 'fo_grade', 'fo_section')}
+    ${field('المدرسة المنقولة إليها', true, `<input id="fo_to_school" type="text" value="${esc(f.to_school)}" placeholder="اسم المدرسة" style="${inputStyle}" />`)}
+    ${field('تاريخ النقل', true, `<input id="fo_transfer_date" type="date" value="${f.transfer_date}" style="${inputStyle}direction:ltr;" />`)}
+    ${field('ملاحظات', false, `<textarea id="fo_notes" placeholder="ملاحظات إضافية (اختياري)" rows="2" style="${inputStyle}resize:none;">${esc(f.notes)}</textarea>`)}
+  `;
+}
+
+function buildFormEl() {
+  const f = state.formEl;
+  return `
+    ${field('اسم الطالبة', true, `<input id="el_student_name" type="text" value="${esc(f.student_name)}" placeholder="الاسم الكامل" style="${inputStyle}" />`)}
+    ${field('رقم الهوية', true, `<input id="el_national_id" type="text" value="${esc(f.national_id)}" placeholder="رقم الهوية الوطنية" style="${inputStyle}direction:ltr;" />`)}
+    ${gradeSection(f.grade, f.section, 'el_grade', 'el_section')}
+    ${field('تاريخ التحويل للتعليم الإلكتروني', true, `<input id="el_transfer_date" type="date" value="${f.transfer_date}" style="${inputStyle}direction:ltr;" />`)}
+    ${field('ملاحظات', false, `<textarea id="el_notes" placeholder="ملاحظات إضافية (اختياري)" rows="2" style="${inputStyle}resize:none;">${esc(f.notes)}</textarea>`)}
+  `;
+}
+
+// ── Delete Modal ───────────────────────────────────────────────────
+function buildDeleteModal() {
+  return `
+  <div class="modal-overlay" style="position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:16px;">
+    <div class="fade-in" style="background:white;border-radius:24px;box-shadow:0 20px 60px rgba(0,0,0,0.2);padding:28px;max-width:360px;width:100%;text-align:center;display:flex;flex-direction:column;gap:16px;">
+      <div style="background:#ffe4e6;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:auto;">
+        <svg width="24" height="24" fill="none" stroke="#f43f5e" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </div>
+      <div>
+        <h3 style="font-weight:700;color:#1e293b;font-size:1.1rem;">تأكيد الحذف</h3>
+        <p style="color:#64748b;font-size:0.875rem;margin-top:8px;">هل أنتِ متأكدة من حذف هذا السجل؟ لا يمكن التراجع عن هذا الإجراء.</p>
+      </div>
+      <div style="display:flex;gap:12px;">
+        <button id="cancelDelete" style="flex:1;padding:10px;border-radius:12px;border:1px solid #e2e8f0;color:#475569;font-size:0.875rem;font-weight:500;cursor:pointer;background:white;font-family:Tajawal,sans-serif;">إلغاء</button>
+        <button id="confirmDelete" style="flex:1;padding:10px;border-radius:12px;background:#f43f5e;color:white;font-size:0.875rem;font-weight:600;border:none;cursor:pointer;font-family:Tajawal,sans-serif;">حذف</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Events ─────────────────────────────────────────────────────────
+function attachEvents() {
+  // Tab & stat card clicks
+  document.querySelectorAll('[data-tab]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.tab = el.dataset.tab;
+      state.search = ''; state.gradeFilter = '';
+      render();
+    });
+  });
+
+  // Search
+  const si = document.getElementById('searchInput');
+  if (si) si.addEventListener('input', e => { state.search = e.target.value; render(); });
+
+  // Grade filter
+  const gf = document.getElementById('gradeFilter');
+  if (gf) gf.addEventListener('change', e => { state.gradeFilter = e.target.value; render(); });
+
+  // Add button
+  const ab = document.getElementById('addBtn');
+  if (ab) ab.addEventListener('click', openAdd);
+
+  // Edit buttons
+  document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      try { openEdit(JSON.parse(btn.dataset.id)); } catch(e) {}
+    });
+  });
+
+  // Delete buttons
+  document.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', () => { state.deleteConfirm = btn.dataset.id; render(); });
+  });
+
+  // Form inputs sync
+  syncFormInputs();
+
+  // Form buttons
+  const cf = document.getElementById('closeForm');
+  if (cf) cf.addEventListener('click', () => { state.showForm = false; render(); });
+  const canf = document.getElementById('cancelForm');
+  if (canf) canf.addEventListener('click', () => { state.showForm = false; render(); });
+  const sb = document.getElementById('saveBtn');
+  if (sb) sb.addEventListener('click', saveRecord);
+
+  // Delete modal
+  const cd = document.getElementById('cancelDelete');
+  if (cd) cd.addEventListener('click', () => { state.deleteConfirm = null; render(); });
+  const cfd = document.getElementById('confirmDelete');
+  if (cfd) cfd.addEventListener('click', () => deleteRecord(state.deleteConfirm));
+
+  // Hover effects for table rows
+  document.querySelectorAll('.table-row').forEach(row => {
+    row.addEventListener('mouseenter', () => row.style.background = 'rgba(248,250,252,0.8)');
+    row.addEventListener('mouseleave', () => row.style.background = '');
+  });
+
+  // Hover for stat cards
+  document.querySelectorAll('.stat-card').forEach(card => {
+    card.addEventListener('mouseenter', () => { if (card.dataset.tab !== state.tab) card.style.boxShadow = '0 4px 16px rgba(0,0,0,0.08)'; });
+    card.addEventListener('mouseleave', () => { if (card.dataset.tab !== state.tab) card.style.boxShadow = ''; });
+  });
+}
+
+function syncFormInputs() {
+  const t = state.tab;
+  const prefix = t === 'transfers_in' ? 'fi' : t === 'transfers_out' ? 'fo' : 'el';
+  const form = t === 'transfers_in' ? state.formIn : t === 'transfers_out' ? state.formOut : state.formEl;
+
+  const fields = Object.keys(form);
+  fields.forEach(key => {
+    const el = document.getElementById(`${prefix}_${key}`);
+    if (!el) return;
+    el.addEventListener('input', e => {
+      form[key] = e.target.value;
+    });
+    el.addEventListener('change', e => {
+      form[key] = e.target.value;
+    });
+  });
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Icons ──────────────────────────────────────────────────────────
+function iconUserPlus() { return `<svg width="20" height="20" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>`; }
+function iconUserMinus() { return `<svg width="20" height="20" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="22" y1="11" x2="16" y2="11"/></svg>`; }
+function iconMonitor() { return `<svg width="20" height="20" fill="none" stroke="white" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`; }
+function iconUserPlusSmall() { return `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>`; }
+function iconUserMinusSmall() { return `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="22" y1="11" x2="16" y2="11"/></svg>`; }
+function iconMonitorSmall() { return `<svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`; }
+
+// ── Init ───────────────────────────────────────────────────────────
+fetchData();
+</script>
+</body>
+</html>
